@@ -2,7 +2,6 @@ package xiaohongshu
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -108,94 +107,63 @@ func (d *DraftsAction) GetDraftsList(ctx context.Context) (*DraftListResponse, e
 	}, nil
 }
 
-// extractDrafts 从页面提取草稿数据
+// extractDrafts 从页面提取草稿数据。用 go-rod 原生 API 探测候选选择器，
+// 命中后逐个解析标题/内容/图片/时间，不做 JS 注入。
 func (d *DraftsAction) extractDrafts(page *rod.Page) ([]DraftItem, error) {
-	// 通过 JS 获取草稿数据，返回 JSON 字符串
-	script := `() => {
-		const drafts = [];
-		const selectors = [
-			'.draft-item',
-			'.draft-card',
-			'.note-item',
-			'[class*="draft"]',
-			'[class*="Draft"]',
-		];
+	candidates := []string{
+		".draft-item",
+		".draft-card",
+		".note-item",
+		`[class*="draft"]`,
+	}
 
-		for (const selector of selectors) {
-			const elements = document.querySelectorAll(selector);
-			if (elements.length > 0) {
-				console.log('Found ' + elements.length + ' elements with selector: ' + selector);
-				for (const el of elements) {
-					try {
-						const titleEl = el.querySelector('.title, .note-title, h3, h4, [class*="title"]');
-						const title = titleEl ? titleEl.innerText.trim() : '';
-
-						const contentEl = el.querySelector('.content, .desc, .description, [class*="content"]');
-						const content = contentEl ? contentEl.innerText.trim() : '';
-
-						const imgElements = el.querySelectorAll('img');
-						const imageUrls = [];
-						for (const img of imgElements) {
-							if (img.src) {
-								imageUrls.push(img.src);
-							}
-						}
-
-						const timeEl = el.querySelector('.time, .date, [class*="time"]');
-						const timeStr = timeEl ? timeEl.innerText.trim() : '';
-
-						drafts.push({
-							id: el.dataset.id || el.id || '',
-							title: title,
-							content: content,
-							imageUrls: imageUrls,
-							time: timeStr,
-							selector: selector
-						});
-					} catch (e) {
-						console.error('Error extracting draft:', e);
-					}
-				}
-				if (drafts.length > 0) break;
-			}
+	for _, sel := range candidates {
+		elems, err := page.Timeout(5 * time.Second).Elements(sel)
+		if err != nil || len(elems) == 0 {
+			continue
 		}
 
-		// 返回 JSON 字符串
-		return JSON.stringify({
-			drafts: drafts,
-			url: window.location.href,
-			title: document.title,
-			bodyText: document.body ? document.body.innerText.substring(0, 300) : ''
-		});
-	}`
+		drafts := make([]DraftItem, 0, len(elems))
+		for _, el := range elems {
+			item := DraftItem{}
 
-	result, err := page.Eval(script)
+			// 标题：优先明确 class，退回常见标题标签
+			titleEl, err := el.Element(`.title, .note-title, h3, h4, [class*="title"]`)
+			if err == nil && titleEl != nil {
+				item.Title = strings.TrimSpace(titleEl.MustText())
+			}
 
-	if err != nil {
-		return nil, errors.Wrap(err, "执行 JS 提取草稿数据失败")
+			// 内容
+			contentEl, err := el.Element(`.content, .desc, .description, [class*="content"]`)
+			if err == nil && contentEl != nil {
+				item.Content = strings.TrimSpace(contentEl.MustText())
+			}
+
+			// 图片 URL
+			imgs, err := el.Elements("img")
+			if err == nil {
+				for _, img := range imgs {
+					if src, err := img.Attribute("src"); err == nil && src != nil && *src != "" {
+						item.ImageURLs = append(item.ImageURLs, *src)
+					}
+				}
+			}
+
+			// ID：data-id 属性优先
+			if id, err := el.Attribute("data-id"); err == nil && id != nil {
+				item.ID = *id
+			}
+
+			drafts = append(drafts, item)
+		}
+
+		if len(drafts) > 0 {
+			logrus.Infof("提取到 %d 条草稿（选择器: %s）", len(drafts), sel)
+			return drafts, nil
+		}
 	}
 
-	// 解析 JSON 结果
-	var jsResult struct {
-		Drafts   []DraftItem `json:"drafts"`
-		URL      string      `json:"url"`
-		Title    string      `json:"title"`
-		BodyText string      `json:"bodyText"`
-	}
-
-	jsonStr := result.Value.String()
-	if err := json.Unmarshal([]byte(jsonStr), &jsResult); err != nil {
-		logrus.Warnf("解析草稿数据失败: %v, raw: %s", err, jsonStr[:min(len(jsonStr), 200)])
-		return nil, errors.Wrap(err, "解析草稿数据失败")
-	}
-
-	// 记录页面信息用于调试
-	logrus.Infof("草稿箱页面: %s, 标题: %s, 草稿数: %d", jsResult.URL, jsResult.Title, len(jsResult.Drafts))
-	if len(jsResult.Drafts) == 0 {
-		logrus.Warnf("未找到草稿，页面内容预览: %s", jsResult.BodyText)
-	}
-
-	return jsResult.Drafts, nil
+	return nil, errors.New("未找到草稿列表元素")
 }
 
 func min(a, b int) int {
