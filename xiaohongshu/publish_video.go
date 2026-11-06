@@ -22,6 +22,7 @@ type PublishVideoContent struct {
 	IsOriginal   bool       // 是否声明原创
 	Visibility   string     // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
 	Products     []string   // 商品关键词列表，用于绑定带货商品
+	SaveAsDraft  bool       // 是否保存到草稿箱而不发布
 }
 
 // NewPublishVideoAction 进入发布页并切换到"上传视频"
@@ -69,7 +70,7 @@ func (p *PublishAction) PublishVideo(ctx context.Context, content PublishVideoCo
 		return errors.Wrap(err, "小红书上传视频失败")
 	}
 
-	if err := submitPublishVideo(ctx, page, content.Title, content.Content, content.Tags, content.ScheduleTime, content.IsOriginal, content.Visibility, content.Products); err != nil {
+	if err := submitPublishVideo(ctx, page, content.Title, content.Content, content.Tags, content.ScheduleTime, content.IsOriginal, content.Visibility, content.Products, content.SaveAsDraft); err != nil {
 		return errors.Wrap(err, "小红书发布失败")
 	}
 	return nil
@@ -106,7 +107,7 @@ func uploadVideo(page *rod.Page, videoPath string) error {
 }
 
 // submitPublishVideo 填写标题、正文、标签并点击发布（等待按钮可点击后再提交）
-func submitPublishVideo(ctx context.Context, page *rod.Page, title, content string, tags []string, scheduleTime *time.Time, isOriginal bool, visibility string, products []string) error {
+func submitPublishVideo(ctx context.Context, page *rod.Page, title, content string, tags []string, scheduleTime *time.Time, isOriginal bool, visibility string, products []string, saveAsDraft bool) error {
 	// 标题
 	titleElem, err := page.Element("div.d-input input")
 	if err != nil {
@@ -156,6 +157,15 @@ func submitPublishVideo(ctx context.Context, page *rod.Page, title, content stri
 	// 绑定商品
 	if err := bindProducts(ctx, page, products); err != nil {
 		return errors.Wrap(err, "绑定商品失败")
+	}
+
+	// 草稿分支：保存到草稿箱而非发布
+	if saveAsDraft {
+		if err := clickSaveDraftButton(page); err != nil {
+			return errors.Wrap(err, "保存草稿失败")
+		}
+		slog.Info("已点击存草稿按钮")
+		return waitDraftSaveResult(page)
 	}
 
 	if err := clickPublishButton(page); err != nil {

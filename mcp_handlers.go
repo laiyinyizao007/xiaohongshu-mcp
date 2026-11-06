@@ -154,18 +154,20 @@ func (s *AppServer) handlePublishContent(ctx context.Context, args map[string]in
 	visibility := parseVisibility(args)
 
 	isOriginal, _ := args["is_original"].(bool)
+	saveAsDraft, _ := args["save_as_draft"].(bool)
 
-	logrus.Infof("MCP: 发布内容 - 标题: %s, 图片数量: %d, 标签数量: %d, 定时: %s, 原创: %v, visibility: %s, 商品: %v", title, len(imagePaths), len(tags), scheduleAt, isOriginal, visibility, products)
+	logrus.Infof("MCP: 发布内容 - 标题: %s, 图片数量: %d, 标签数量: %d, 定时: %s, 原创: %v, visibility: %s, 商品: %v, 草稿: %v", title, len(imagePaths), len(tags), scheduleAt, isOriginal, visibility, products, saveAsDraft)
 
 	req := &PublishRequest{
-		Title:      title,
-		Content:    content,
-		Images:     imagePaths,
-		Tags:       tags,
-		ScheduleAt: scheduleAt,
-		IsOriginal: isOriginal,
-		Visibility: visibility,
-		Products:   products,
+		Title:       title,
+		Content:     content,
+		Images:      imagePaths,
+		Tags:        tags,
+		ScheduleAt:  scheduleAt,
+		IsOriginal:  isOriginal,
+		Visibility:  visibility,
+		Products:    products,
+		SaveAsDraft: saveAsDraft,
 	}
 
 	result, err := s.xiaohongshuService.PublishContent(ctx, req)
@@ -225,18 +227,20 @@ func (s *AppServer) handlePublishVideo(ctx context.Context, args map[string]inte
 	scheduleAt, _ := args["schedule_at"].(string)
 	visibility := parseVisibility(args)
 	isOriginal, _ := args["is_original"].(bool)
+	saveAsDraft, _ := args["save_as_draft"].(bool)
 
-	logrus.Infof("MCP: 发布视频 - 标题: %s, 标签数量: %d, 定时: %s, 原创: %v, visibility: %s, 商品: %v", title, len(tags), scheduleAt, isOriginal, visibility, products)
+	logrus.Infof("MCP: 发布视频 - 标题: %s, 标签数量: %d, 定时: %s, 原创: %v, visibility: %s, 商品: %v, 草稿: %v", title, len(tags), scheduleAt, isOriginal, visibility, products, saveAsDraft)
 
 	req := &PublishVideoRequest{
-		Title:      title,
-		Content:    content,
-		Video:      videoPath,
-		Tags:       tags,
-		ScheduleAt: scheduleAt,
-		IsOriginal: isOriginal,
-		Visibility: visibility,
-		Products:   products,
+		Title:       title,
+		Content:     content,
+		Video:       videoPath,
+		Tags:        tags,
+		ScheduleAt:  scheduleAt,
+		IsOriginal:  isOriginal,
+		Visibility:  visibility,
+		Products:    products,
+		SaveAsDraft: saveAsDraft,
 	}
 
 	result, err := s.xiaohongshuService.PublishVideo(ctx, req)
@@ -835,4 +839,39 @@ func (s *AppServer) handleLikeNotification(ctx context.Context, commentID string
 	}
 
 	return marshalMCPResult(result, "点赞")
+}
+
+// handleListDrafts 获取草稿箱列表
+func (s *AppServer) handleListDrafts(ctx context.Context) *MCPToolResult {
+	logrus.Info("MCP: 获取草稿箱列表")
+
+	result, err := s.xiaohongshuService.ListDrafts(ctx)
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: "获取草稿箱列表失败: " + err.Error(),
+			}},
+			IsError: true,
+		}
+	}
+
+	// 格式化输出，转换为JSON字符串
+	jsonData, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: fmt.Sprintf("获取草稿箱列表成功，但序列化失败: %v", err),
+			}},
+			IsError: true,
+		}
+	}
+
+	return &MCPToolResult{
+		Content: []MCPContent{{
+			Type: "text",
+			Text: string(jsonData),
+		}},
+	}
 }
