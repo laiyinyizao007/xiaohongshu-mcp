@@ -27,6 +27,7 @@ type PublishImageContent struct {
 	IsOriginal   bool       // 是否声明原创
 	Visibility   string     // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
 	Products     []string   // 商品关键词列表，用于绑定带货商品
+	SaveAsDraft  bool       // 是否保存到草稿箱而不发布
 }
 
 type PublishAction struct {
@@ -92,9 +93,9 @@ func (p *PublishAction) Publish(ctx context.Context, content PublishImageContent
 		tags = tags[:10]
 	}
 
-	logrus.Infof("发布内容: title=%s, images=%v, tags=%v, schedule=%v, original=%v, visibility=%s, products=%v", content.Title, len(content.ImagePaths), tags, content.ScheduleTime, content.IsOriginal, content.Visibility, content.Products)
+	logrus.Infof("发布内容: title=%s, images=%v, tags=%v, schedule=%v, original=%v, visibility=%s, products=%v, saveAsDraft=%v", content.Title, len(content.ImagePaths), tags, content.ScheduleTime, content.IsOriginal, content.Visibility, content.Products, content.SaveAsDraft)
 
-	if err := submitPublish(ctx, page, content.Title, content.Content, tags, content.ScheduleTime, content.IsOriginal, content.Visibility, content.Products); err != nil {
+	if err := submitPublish(ctx, page, content.Title, content.Content, tags, content.ScheduleTime, content.IsOriginal, content.Visibility, content.Products, content.SaveAsDraft); err != nil {
 		return errors.Wrap(err, "小红书发布失败")
 	}
 
@@ -345,7 +346,7 @@ func waitForUploadComplete(page *rod.Page, expectedCount int) error {
 	return errors.Errorf("第%d张图片上传超时(60s)，请检查网络连接和图片大小", expectedCount)
 }
 
-func submitPublish(ctx context.Context, page *rod.Page, title, content string, tags []string, scheduleTime *time.Time, isOriginal bool, visibility string, products []string) error {
+func submitPublish(ctx context.Context, page *rod.Page, title, content string, tags []string, scheduleTime *time.Time, isOriginal bool, visibility string, products []string, saveAsDraft bool) error {
 	titleElem, err := page.Element("div.d-input input")
 	if err != nil {
 		return errors.Wrap(err, "查找标题输入框失败")
@@ -403,6 +404,15 @@ func submitPublish(ctx context.Context, page *rod.Page, title, content string, t
 
 	if err := bindProducts(ctx, page, products); err != nil {
 		return errors.Wrap(err, "绑定商品失败")
+	}
+
+	// 草稿分支：保存到草稿箱而非发布
+	if saveAsDraft {
+		if err := clickSaveDraftButton(page); err != nil {
+			return errors.Wrap(err, "保存草稿失败")
+		}
+		slog.Info("已点击存草稿按钮")
+		return waitDraftSaveResult(page)
 	}
 
 	if err := clickPublishButton(page); err != nil {
@@ -1406,4 +1416,79 @@ func waitForModalClose(page *rod.Page) error {
 	}
 
 	return errors.New("等待弹窗关闭超时")
+}
+
+// clickSaveDraftButton 点击「存草稿」按钮。优先在发布按钮容器内按文案匹配，
+// 找不到再全局遍历可见按钮，全程用 go-rod 原生 API，不注入 JS。
+func clickSaveDraftButton(page *rod.Page) error {
+	// 文案关键词按优先级：草稿 > 暂存 > 保存
+	keywords := []string{"草稿", "暂存", "保存"}
+
+	// 先圈定容器，缩小查找范围
+	containers := []string{".publish-page-publish-btn", ".publishBtn", ".publish-footer"}
+	for _, sel := range containers {
+		btns, err := page.Elements(sel + " button")
+		if err != nil || len(btns) == 0 {
+			continue
+		}
+		for _, btn := range btns {
+			if !isElementVisible(btn) {
+				continue
+			}
+			text := strings.TrimSpace(btn.MustText())
+			for _, kw := range keywords {
+				if strings.Contains(text, kw) {
+					slog.Info("找到存草稿按钮", "text", text, "container", sel)
+					return humanize.Click(btn)
+				}
+			}
+		}
+	}
+
+	// 兜底：全局遍历可见按钮
+	btns, err := page.Elements("button")
+	if err != nil {
+		return errors.Wrap(err, "查找按钮失败")
+	}
+	for _, btn := range btns {
+		if !isElementVisible(btn) {
+			continue
+		}
+		text := strings.TrimSpace(btn.MustText())
+		for _, kw := range keywords {
+			if strings.Contains(text, kw) {
+				slog.Info("全局找到存草稿按钮", "text", text)
+				return humanize.Click(btn)
+			}
+		}
+	}
+
+	return errors.New("未找到存草稿按钮")
+}
+
+// waitDraftSaveResult 等待草稿保存成功：页面跳转离开发布页，或出现明确的保存成功提示。
+// 不做 JS 注入，只用 go-rod 的 URL 检测与 XPath 文本匹配。
+func waitDraftSaveResult(page *rod.Page) error {
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		// 最可靠信号：跳转离开发布页
+		if info, err := page.Info(); err == nil && !strings.Contains(info.URL, "publish") {
+			slog.Info("草稿保存成功，页面已跳转", "url", info.URL)
+			return nil
+		}
+
+		// 明确成功提示词（排除正文长文本，避免误判）
+		for _, w := range []string{"保存成功", "已保存", "保存至草稿"} {
+			has, elem, err := page.HasX("//*[contains(normalize-space(text()), '" + w + "')]")
+			if err == nil && has && elem != nil {
+				if text := strings.TrimSpace(elem.MustText()); len(text) <= 100 {
+					slog.Info("检测到草稿保存成功提示", "text", text)
+					return nil
+				}
+			}
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+	return errors.New("草稿保存结果等待超时")
 }

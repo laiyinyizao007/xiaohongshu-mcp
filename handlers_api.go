@@ -411,3 +411,16 @@ func (s *AppServer) likeNotificationHandler(c *gin.Context) {
 
 	respondSuccess(c, map[string]any{"data": result}, "操作成功")
 }
+
+// listDraftsHandler 获取草稿箱列表
+func (s *AppServer) listDraftsHandler(c *gin.Context) {
+	result, err := s.xiaohongshuService.ListDrafts(c.Request.Context())
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "LIST_DRAFTS_FAILED",
+			"获取草稿箱列表失败", err.Error())
+		return
+	}
+
+	c.Set("account", "ai-report")
+	respondSuccess(c, result, "获取草稿箱列表成功")
+}
